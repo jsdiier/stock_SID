@@ -1,0 +1,36 @@
+# Model weights
+sft/models/
+rqvae/checkpoints/
+sft/checkpoints/
+
+# Generated data files
+data/raw/
+data/embeddings/
+sft/data/
+
+# Logs
+rqvae/logs/
+sft/logs/
+rqvae/results/
+sft/results/
+
+# Wandb
+rqvae/wandb/
+sft/wandb/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
