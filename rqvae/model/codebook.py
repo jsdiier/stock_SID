@@ -11,12 +11,14 @@ class VQCodebook(nn.Module):
     """
 
     def __init__(self, codebook_size: int, embed_dim: int,
-                 decay: float = 0.99, eps: float = 1e-5):
+                 decay: float = 0.99, eps: float = 1e-5,
+                 restart_threshold: float = 1.0):
         super().__init__()
         self.codebook_size = codebook_size
         self.embed_dim = embed_dim
         self.decay = decay
         self.eps = eps
+        self.restart_threshold = restart_threshold
 
         embed = torch.randn(codebook_size, embed_dim)
         nn.init.uniform_(embed, -1 / codebook_size, 1 / codebook_size)
@@ -76,6 +78,16 @@ class VQCodebook(nn.Module):
             * n
         )
         self.embed.copy_(self.embed_avg / smoothed.unsqueeze(1))
+
+        # Dead code restart: replace unused codes with random batch samples
+        dead = (self.cluster_size < self.restart_threshold).nonzero(as_tuple=False).squeeze(1)
+        if dead.numel() > 0:
+            n_dead = dead.numel()
+            replace_idx = torch.randint(0, z.size(0), (n_dead,), device=z.device)
+            replacement = z[replace_idx].detach()
+            self.embed[dead] = replacement
+            self.embed_avg[dead] = replacement
+            self.cluster_size[dead] = self.restart_threshold
 
     def active_codes(self, indices: torch.Tensor) -> float:
         """Fraction of codebook entries used in this batch (codebook utilisation)."""

@@ -1,24 +1,27 @@
-# Model weights
+# Virtual environment
+.venv/
+
+# Qwen3 model weights (download separately on target machine)
 sft/models/
-rqvae/checkpoints/
-sft/checkpoints/
 
-# Generated data files
+# Raw stock data (regenerate via run_preprocess.sh)
 data/raw/
-data/embeddings/
-sft/data/
 
-# Logs
+# Large embedding file (regenerate via run_train.sh + run_export.sh)
+data/embeddings/train.npy
+
+# Logs and results
 rqvae/logs/
 sft/logs/
-rqvae/results/
 sft/results/
+rqvae/results/
 
-# Wandb
+# WandB
+wandb/
 rqvae/wandb/
 sft/wandb/
 
-# Python
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
