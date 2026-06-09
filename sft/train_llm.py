@@ -220,6 +220,7 @@ def main():
     # ── resume: load weights + optimizer state ────────────────
     resume_epoch     = 0
     resume_batch_idx = 0   # how many batches to skip inside the first resumed epoch
+    global_opt_step  = 0
     step_ckpts       = []
     epoch_ckpts      = []
     if args.resume:
