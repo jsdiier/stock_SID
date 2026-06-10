@@ -233,6 +233,9 @@ def main():
     beam_k   = cfg.getint('inference', 'beam_k',        fallback=5)
     inf_bs   = cfg.getint('inference', 'batch_size',    fallback=32)
     rq_conf  = cfg.get('inference',    'rqvae_config',  fallback='rqvae/conf/common.conf')
+    excl     = tuple(p.strip() for p in
+                     cfg.get('inference', 'exclude_prefixes', fallback='').split(',')
+                     if p.strip())
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     log.info(f"Device: {device} | beam_k={beam_k} | batch_size={inf_bs}")
@@ -251,6 +254,12 @@ def main():
     embedding_dir = rq_cfg.get('paths', 'embedding_dir')
 
     npz_files = sorted(glob.glob(os.path.join(raw_dir, '*.npz')))
+    if excl:
+        n_before  = len(npz_files)
+        npz_files = [p for p in npz_files
+                     if not os.path.basename(p).startswith(excl)]
+        log.info(f"Excluded {n_before - len(npz_files):,} stocks "
+                 f"with prefixes {list(excl)}")
     if args.max_stocks:
         npz_files = npz_files[:args.max_stocks]
     if not npz_files:
