@@ -13,7 +13,6 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import chinadata.ca_data as ts
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +28,9 @@ _COL_IDX   = {c: i for i, c in enumerate(INDICATORS)}
 # ---------------------------------------------------------------------------
 
 def init_api(token: str):
+    # Lazy import: only fetching needs the API package; merge-only mode
+    # must work on machines without chinadata installed.
+    import chinadata.ca_data as ts
     ts.set_token(token)
     return ts.pro_api(token)
 
