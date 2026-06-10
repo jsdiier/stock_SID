@@ -286,6 +286,42 @@ def main():
 
     # ── Step 7 : optimiser + schedule ────────────────────────
     save_steps = cfg.getint('llm', 'save_steps', fallback=500)
+    eval_steps = cfg.getint('llm', 'eval_steps', fallback=200)
+
+    # ── val dataset ───────────────────────────────────────────
+    val_path = os.path.join(cfg.get('paths', 'data_dir'), 'val.npz')
+    val_loader = None
+    if os.path.exists(val_path):
+        log.info(f"Loading val data: {val_path}")
+        dv         = np.load(val_path)
+        val_ds     = LLMSIDDataset(dv['contexts'], dv['targets'], tokenizer, K, max_len)
+        val_loader = DataLoader(
+            val_ds,
+            batch_size  = batch_size * 2,   # no grad → can use larger batch
+            shuffle     = False,
+            num_workers = 0,
+            collate_fn  = partial(collate_pad, pad_id=tokenizer.pad_token_id or 0),
+            pin_memory  = (device.type == 'cuda'),
+            drop_last   = False,
+        )
+        log.info(f"  {len(val_ds):,} val samples  |  eval every {eval_steps} opt steps")
+    else:
+        log.warning(f"val.npz not found at {val_path} — run build_dataset.py to generate it. "
+                    f"Training without validation.")
+
+    @torch.no_grad()
+    def run_eval() -> float:
+        """Compute mean val loss over the full val set."""
+        model.eval()
+        total, n = 0.0, 0
+        for batch in val_loader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                out = model(**batch)
+            total += out.loss.item()
+            n     += 1
+        model.train()
+        return total / max(n, 1)
 
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=wd)
@@ -366,8 +402,9 @@ def main():
                 out  = model(**batch)
                 loss = out.loss / grad_accum
 
+            batch_loss = loss.item() * grad_accum
             loss.backward()
-            epoch_loss += loss.item() * grad_accum
+            epoch_loss += batch_loss
             n_trained  += 1
 
             # ── gradient step ──────────────────────────────
@@ -382,9 +419,21 @@ def main():
                 if save_steps > 0 and global_opt_step % save_steps == 0:
                     _save_step_ckpt(epoch, step)
 
+                # ── validation ────────────────────────────
+                if val_loader is not None and eval_steps > 0 and global_opt_step % eval_steps == 0:
+                    val_loss = run_eval()
+                    log.info(
+                        f"ep {epoch+1}/{epochs} | "
+                        f"opt {global_opt_step}/{total_opt_steps} | "
+                        f"VAL loss={val_loss:.4f}"
+                    )
+                    if run:
+                        import wandb
+                        wandb.log({'val/loss': val_loss, 'train/opt_step': global_opt_step})
+
                 # ── log: first 5 steps immediately, then every 20 ─────
                 if global_opt_step <= 5 or global_opt_step % 20 == 0:
-                    avg_loss   = epoch_loss / max(n_trained, 1)
+                    epoch_avg  = epoch_loss / max(n_trained, 1)
                     lr_now     = scheduler.get_last_lr()[0] * lr
                     elapsed    = time.time() - t0
                     steps_left = total_opt_steps - global_opt_step
@@ -393,7 +442,7 @@ def main():
                     log.info(
                         f"ep {epoch+1}/{epochs} | "
                         f"opt {global_opt_step}/{total_opt_steps} | "
-                        f"loss={avg_loss:.4f} | "
+                        f"loss={batch_loss:.4f}(step) {epoch_avg:.4f}(ep_avg) | "
                         f"lr={lr_now:.3e} | "
                         f"ETA {eta_s/3600:.1f}h"
                     )
@@ -401,13 +450,14 @@ def main():
                     if run:
                         import wandb
                         wandb.log({
-                            'train/loss':      avg_loss,
-                            'train/lr':        lr_now,
-                            'train/epoch':     epoch + (step / len(loader)),
-                            'train/opt_step':  global_opt_step,
-                            'train/eta_hours': eta_s / 3600,
-                        }, step=global_opt_step)
-                        run.summary['last_loss'] = avg_loss
+                            'train/loss':       batch_loss,
+                            'train/loss_avg':   epoch_avg,
+                            'train/lr':         lr_now,
+                            'train/epoch':      epoch + (step / len(loader)),
+                            'train/opt_step':   global_opt_step,
+                            'train/eta_hours':  eta_s / 3600,
+                        })
+                        run.summary['last_loss'] = batch_loss
 
         # ── flush leftover gradient ────────────────────────
         if len(loader) % grad_accum != 0:
@@ -418,12 +468,25 @@ def main():
             global_opt_step += 1
 
         epoch_avg = epoch_loss / max(n_trained, 1)
-        log.info(f"=== epoch {epoch+1}/{epochs} done | avg_loss={epoch_avg:.4f} ===")
+
+        # ── epoch-end validation ───────────────────────────
+        val_msg = ''
+        if val_loader is not None:
+            val_loss = run_eval()
+            val_msg  = f" | val_loss={val_loss:.4f}"
+            if run:
+                import wandb
+                wandb.log({
+                    'val/loss':    val_loss,
+                    'epoch/index': epoch + 1,
+                    'train/opt_step': global_opt_step,
+                })
+
+        log.info(f"=== epoch {epoch+1}/{epochs} done | avg_loss={epoch_avg:.4f}{val_msg} ===")
 
         if run:
             import wandb
-            wandb.log({'epoch/loss': epoch_avg, 'epoch/index': epoch + 1},
-                      step=global_opt_step)
+            wandb.log({'epoch/train_loss': epoch_avg, 'epoch/index': epoch + 1})
 
         # ── epoch-end checkpoint ───────────────────────────
         save_path = os.path.join(adapter_dir, f'epoch_{epoch+1:02d}')

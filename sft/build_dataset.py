@@ -1,5 +1,5 @@
 """
-Build SFT train and test datasets from the RQ-VAE SID cache.
+Build SFT train / val / test datasets from the RQ-VAE SID cache.
 
 Reads
 -----
@@ -12,6 +12,10 @@ Writes
       targets     : (N, K)   int64  — next-week ground-truth codes
       ts_codes    : (N,)     str
       week_labels : (N,)     str    — the target week for each sample
+
+  <data_dir>/val.npz   (same format as train.npz)
+      Built from the last `val_ratio` fraction of training weeks so that
+      validation data is always chronologically after all training data.
 
   <data_dir>/test.npz
       ts_codes            : (M,)    str  — stocks that have test-range data
@@ -173,11 +177,21 @@ def main():
     stock_sids = filter_universe(stock_sids, universe, max_stocks)
     log.info(f"  After universe filter: {len(stock_sids):,} stocks")
 
-    # ── train dataset ─────────────────────────────────────────
-    train_weeks = weeks_in_range(train_start, train_end)
-    train_set   = set(train_weeks)
-    log.info(f"Building train dataset  [{train_start} → {train_end}]  ({len(train_weeks)} weeks) …")
+    # ── train / val split (time-based) ───────────────────────
+    val_ratio   = cfg.getfloat('sequence', 'val_ratio', fallback=0.05)
+    all_weeks   = weeks_in_range(train_start, train_end)
+    n_val       = max(1, round(len(all_weeks) * val_ratio))
+    train_weeks = all_weeks[:-n_val]
+    val_weeks_list = all_weeks[-n_val:]
+    log.info(
+        f"Week split:  train={len(train_weeks)} weeks [{train_weeks[0]} → {train_weeks[-1]}]  "
+        f"val={len(val_weeks_list)} weeks [{val_weeks_list[0]} → {val_weeks_list[-1]}]  "
+        f"(val_ratio={val_ratio})"
+    )
 
+    # ── train dataset ─────────────────────────────────────────
+    train_set = set(train_weeks)
+    log.info(f"Building train dataset …")
     ctx, tgt, tsc, wlb = build_train(stock_sids, train_set, H, min_ctx, PAD, K)
 
     if len(ctx) == 0:
@@ -189,6 +203,25 @@ def main():
                             ts_codes=tsc, week_labels=wlb)
         log.info(f"  → {len(ctx):,} samples  saved: {train_path}")
         log.info(f"  context shape: {ctx.shape}  |  target shape: {tgt.shape}")
+
+    # ── val dataset ───────────────────────────────────────────
+    # Val samples use the full preceding history (including train weeks) as context,
+    # but only target weeks from val_weeks_list are included.
+    log.info(f"Building val dataset …")
+    val_set = set(val_weeks_list)
+    # For val we allow the history to span the entire stock sequence (train + val context)
+    # so we pass the unfiltered stock_sids and just restrict target weeks.
+    vctx, vtgt, vtsc, vwlb = build_train(stock_sids, val_set, H, min_ctx, PAD, K)
+
+    if len(vctx) == 0:
+        log.warning("No val samples generated.")
+    else:
+        val_path = os.path.join(data_dir, 'val.npz')
+        np.savez_compressed(val_path,
+                            contexts=vctx, targets=vtgt,
+                            ts_codes=vtsc, week_labels=vwlb)
+        log.info(f"  → {len(vctx):,} samples  saved: {val_path}")
+        log.info(f"  context shape: {vctx.shape}  |  target shape: {vtgt.shape}")
 
     # ── test dataset ──────────────────────────────────────────
     test_weeks = weeks_in_range(test_start, test_end)
