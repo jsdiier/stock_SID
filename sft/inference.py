@@ -191,6 +191,7 @@ def beam_predict(model, prompts: list, level_ids: list, pad_id: int,
         early_stopping             = False,
         pad_token_id               = pad_id,
         prefix_allowed_tokens_fn   = _prefix_fn,
+        renormalize_logits         = True,   # prob over the 128 valid SID tokens
         return_dict_in_generate    = True,
         output_scores              = True,
     )
@@ -346,7 +347,7 @@ def main():
                     score += prob * ret
                 preds.append({
                     'sid':            sid_tokens_str(np.array(trip), K),
-                    'beamsearch_prob': round(prob, 6),
+                    'beamsearch_prob': float(f'{prob:.4g}'),   # keep tiny probs visible
                     'avg_return':      None if ret is None else round(ret, 6),
                     'n_hist':          n_hist,
                 })
@@ -354,7 +355,7 @@ def main():
                 'ts_code':     stocks[i],
                 'target_week': target_week,
                 'predictions': preds,
-                'score':       round(score, 6),
+                'score':       float(f'{score:.4g}'),
             })
 
     # ── outputs ───────────────────────────────────────────────
