@@ -37,6 +37,7 @@ import sys
 import numpy as np
 import pandas as pd
 import torch
+from tqdm import tqdm
 
 _SFT_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT    = os.path.dirname(_SFT_DIR)
@@ -110,7 +111,7 @@ def ensure_sid_cache(rqvae: RQVAE, embedding_dir: str, device) -> None:
     log.info("sid_cache.npy is stale/missing — re-encoding train.npy with RQ-VAE …")
     data  = np.load(train_path, mmap_mode='r')
     codes = []
-    for i in range(0, len(data), 4096):
+    for i in tqdm(range(0, len(data), 4096), desc='Rebuild sid_cache', unit='batch'):
         x = torch.from_numpy(np.array(data[i:i + 4096])).float().to(device)
         codes.append(rqvae.encode_to_sid(x).cpu().numpy())
     codes = np.concatenate(codes, axis=0)
@@ -318,7 +319,9 @@ def main():
 
     # ── batched beam search ───────────────────────────────────
     results = []
-    for b0 in range(0, len(stocks), inf_bs):
+    for b0 in tqdm(range(0, len(stocks), inf_bs),
+                   desc='Beam search', unit='batch',
+                   total=(len(stocks) + inf_bs - 1) // inf_bs):
         batch_idx = range(b0, min(b0 + inf_bs, len(stocks)))
         prompts   = []
         for i in batch_idx:
@@ -353,9 +356,6 @@ def main():
                 'predictions': preds,
                 'score':       round(score, 6),
             })
-
-        if (b0 // inf_bs) % 10 == 0:
-            log.info(f"  predicted {min(b0 + inf_bs, len(stocks)):,}/{len(stocks):,}")
 
     # ── outputs ───────────────────────────────────────────────
     results.sort(key=lambda r: r['score'], reverse=True)
