@@ -4,9 +4,6 @@
 # Qwen3 model weights (download separately on target machine)
 sft/models/
 
-# Raw stock data (regenerate via run_preprocess.sh)
-data/raw/
-
 # Large embedding file (regenerate via run_train.sh + run_export.sh)
 data/embeddings/train.npy
 
