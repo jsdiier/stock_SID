@@ -77,6 +77,26 @@ fi
 # ============================================================
 # [2/2] 推理
 # ============================================================
+# --- 推理任务概览 tag ---
+python -c "
+import datetime as dt, glob, os, configparser
+today = dt.date.today()
+y, w, _ = today.isocalendar()
+mon = today - dt.timedelta(days=today.weekday())
+fri = mon + dt.timedelta(days=4)
+cfg = configparser.ConfigParser(); cfg.read('sft/conf/sft.conf', encoding='utf-8')
+excl  = tuple(p.strip() for p in cfg.get('inference','exclude_prefixes',fallback='').split(',') if p.strip())
+k     = cfg.get('inference','beam_k',fallback='5')
+files = glob.glob('data/raw/*.npz')
+n_all  = len(files)
+n_keep = len([f for f in files if not os.path.basename(f).startswith(excl)])
+print(f'>>> ───────────── 推理任务概览 ─────────────')
+print(f'>>> 预测目标周   : {y}-W{w:02d}  ({mon} ~ {fri})')
+print(f'>>> 输入数据截至 : 上一完整周 (目标周之前最近52周)')
+print(f'>>> 股票池       : {n_all} 支, 排除前缀 {list(excl)} 后待推理 {n_keep} 支')
+print(f'>>> beam_k       : {k} (每支股票输出{k}个候选SID)')
+print(f'>>> ──────────────────────────────────────')
+"
 echo "[2/2] Running inference ..."
 python sft/inference.py --config sft/conf/sft.conf "$@"
 echo "Done."
