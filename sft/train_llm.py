@@ -107,9 +107,10 @@ def print_sample_prompts(dataset: LLMSIDDataset, tokenizer, n: int = 3):
 
 # ── wandb ─────────────────────────────────────────────────────────────────────
 
-def init_wandb(cfg, run_config: dict):
+def init_wandb(cfg, run_config: dict, run_suffix: str = ''):
     """
     Initialise a wandb run using [wandb] config section.
+    run_suffix (launch time) keeps different experiments distinguishable.
     Returns the run object (or None if disabled / import fails).
     """
     try:
@@ -121,6 +122,8 @@ def init_wandb(cfg, run_config: dict):
         api_key  = cfg.get('wandb', 'api_key',  fallback=None)
         project  = cfg.get('wandb', 'project',  fallback='stock-sid-sft')
         run_name = cfg.get('wandb', 'run_name',  fallback='qwen3-lora')
+        if run_suffix:
+            run_name = f'{run_name}_{run_suffix}'
 
         if api_key:
             wandb.login(key=api_key, relogin=False)
@@ -217,6 +220,19 @@ def main():
     model = get_peft_model(model, lora_cfg)
     model.print_trainable_parameters()
 
+    # ── run directory: one folder per training run ────────────
+    # Fresh run  → adapter_dir/run_<launch-time>/   (epoch_* + step_* inside)
+    # --resume   → reuse the latest existing run_* folder
+    run_tag = time.strftime('%Y%m%d_%H%M%S')
+    if args.resume:
+        prev_runs = sorted(glob.glob(os.path.join(adapter_dir, 'run_*')))
+        run_dir   = prev_runs[-1] if prev_runs else adapter_dir   # legacy fallback
+        log.info(f"Resume mode → run dir: {run_dir}")
+    else:
+        run_dir = os.path.join(adapter_dir, f'run_{run_tag}')
+        log.info(f"Fresh run → run dir: {run_dir}")
+    os.makedirs(run_dir, exist_ok=True)
+
     # ── resume: load weights + optimizer state ────────────────
     resume_epoch     = 0
     resume_batch_idx = 0   # how many batches to skip inside the first resumed epoch
@@ -224,8 +240,8 @@ def main():
     step_ckpts       = []
     epoch_ckpts      = []
     if args.resume:
-        step_ckpts  = sorted(glob.glob(os.path.join(adapter_dir, 'step_*')))
-        epoch_ckpts = sorted(glob.glob(os.path.join(adapter_dir, 'epoch_*')))
+        step_ckpts  = sorted(glob.glob(os.path.join(run_dir, 'step_*')))
+        epoch_ckpts = sorted(glob.glob(os.path.join(run_dir, 'epoch_*')))
         latest = step_ckpts[-1] if step_ckpts else (epoch_ckpts[-1] if epoch_ckpts else None)
         if latest:
             model.load_adapter(latest, adapter_name='default', is_trainable=True)
@@ -280,7 +296,7 @@ def main():
         sid_tokens  = len(sid_tokens),
         vocab_size  = len(tokenizer),
     )
-    run = init_wandb(cfg, wb_config)
+    run = init_wandb(cfg, wb_config, run_suffix=run_tag)
     if run:
         log.info(f"wandb run: {run.url}")
 
@@ -354,7 +370,7 @@ def main():
 
     # ── helper: save mid-epoch checkpoint ─────────────────────
     def _save_step_ckpt(epoch_idx, batch_idx):
-        path = os.path.join(adapter_dir, f'step_{global_opt_step:06d}')
+        path = os.path.join(run_dir, f'step_{global_opt_step:06d}')
         os.makedirs(path, exist_ok=True)
         model.save_pretrained(path)
         tokenizer.save_pretrained(path)
@@ -367,7 +383,7 @@ def main():
         }, os.path.join(path, 'trainer_state.pt'))
         log.info(f"Step checkpoint saved → {path}")
         # Keep only the 2 most recent step checkpoints to save disk space
-        old = sorted(glob.glob(os.path.join(adapter_dir, 'step_*')))[:-2]
+        old = sorted(glob.glob(os.path.join(run_dir, 'step_*')))[:-2]
         for o in old:
             import shutil
             shutil.rmtree(o, ignore_errors=True)
@@ -433,7 +449,7 @@ def main():
 
                 # ── log: first 5 steps immediately, then every 20 ─────
                 if global_opt_step <= 5 or global_opt_step % 20 == 0:
-                    epoch_avg  = epoch_loss / max(n_trained, 1)
+                    avg_loss   = epoch_loss / max(n_trained, 1)
                     lr_now     = scheduler.get_last_lr()[0] * lr
                     elapsed    = time.time() - t0
                     steps_left = total_opt_steps - global_opt_step
@@ -442,7 +458,7 @@ def main():
                     log.info(
                         f"ep {epoch+1}/{epochs} | "
                         f"opt {global_opt_step}/{total_opt_steps} | "
-                        f"loss={batch_loss:.4f}(step) {epoch_avg:.4f}(ep_avg) | "
+                        f"loss={avg_loss:.4f} | "
                         f"lr={lr_now:.3e} | "
                         f"ETA {eta_s/3600:.1f}h"
                     )
@@ -450,14 +466,13 @@ def main():
                     if run:
                         import wandb
                         wandb.log({
-                            'train/loss':       batch_loss,
-                            'train/loss_avg':   epoch_avg,
-                            'train/lr':         lr_now,
-                            'train/epoch':      epoch + (step / len(loader)),
-                            'train/opt_step':   global_opt_step,
-                            'train/eta_hours':  eta_s / 3600,
+                            'train/loss':      avg_loss,
+                            'train/lr':        lr_now,
+                            'train/epoch':     epoch + (step / len(loader)),
+                            'train/opt_step':  global_opt_step,
+                            'train/eta_hours': eta_s / 3600,
                         })
-                        run.summary['last_loss'] = batch_loss
+                        run.summary['last_loss'] = avg_loss
 
         # ── flush leftover gradient ────────────────────────
         if len(loader) % grad_accum != 0:
@@ -489,7 +504,7 @@ def main():
             wandb.log({'epoch/train_loss': epoch_avg, 'epoch/index': epoch + 1})
 
         # ── epoch-end checkpoint ───────────────────────────
-        save_path = os.path.join(adapter_dir, f'epoch_{epoch+1:02d}')
+        save_path = os.path.join(run_dir, f'epoch_{epoch+1:02d}')
         model.save_pretrained(save_path)
         tokenizer.save_pretrained(save_path)
         log.info(f"Epoch adapter saved → {save_path}")

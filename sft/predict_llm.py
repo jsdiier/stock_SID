@@ -33,8 +33,12 @@ def load_model_and_tokenizer(cfg, device):
     model_dir   = cfg.get('llm', 'model_dir')
     adapter_dir = cfg.get('llm', 'adapter_dir')
 
-    # Find latest saved adapter
-    adapters = sorted(glob.glob(os.path.join(adapter_dir, 'epoch_*')))
+    # Find latest saved adapter.
+    # New layout: adapter_dir/run_<timestamp>/epoch_XX  (one folder per training
+    # run; timestamp sorts chronologically, so the last path = newest run's
+    # newest epoch). Legacy layout adapter_dir/epoch_XX is the fallback.
+    adapters = (sorted(glob.glob(os.path.join(adapter_dir, 'run_*', 'epoch_*')))
+                or sorted(glob.glob(os.path.join(adapter_dir, 'epoch_*'))))
     if not adapters:
         raise FileNotFoundError(f"No adapters in {adapter_dir} — run train_llm.py first")
     latest = adapters[-1]
